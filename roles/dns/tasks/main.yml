@@ -1,0 +1,135 @@
+- name: Add dns service
+  firewalld:
+    service: dns
+    permanent: yes
+    state: enabled
+
+- name: Open port 8301
+  firewalld:
+    port: "{{ item }}"
+    permanent: yes
+    state: enabled
+  with_items:
+  - 8301/tcp
+  - 8301/udp
+  notify: reload firewalld
+
+- name: Disable IPv6
+  copy:
+    src: 70-ipv6.conf
+    dest: /etc/sysctl.d/70-ipv6.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Disable IPv6 with sysctl
+  sysctl: name={{ item }} value=1 state=present reload=yes sysctl_file=/etc/sysctl.d/70-ipv6.conf
+  with_items:
+    - net.ipv6.conf.all.disable_ipv6
+    - net.ipv6.conf.default.disable_ipv6
+
+- name: Changing hostname
+  template:
+    src: hostname.j2
+    dest: /etc/hostname
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: insert template into hosts
+  template:
+    src: hosts.j2
+    dest: /etc/hosts
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: reboot vm
+  reboot:
+    reboot_timeout: 3600
+
+- name: dnf install bind and bind-utils
+  dnf:
+    name: ['bind', 'bind-utils']
+    state: latest
+
+- name: Create log directory 
+  file:
+    path: /var/named/log
+    state: directory
+    mode: "0750"
+    owner: named
+    group: named
+    
+
+- name: Create file into /var/named/log
+  file:
+    path: /var/named/log/"{{ item }}"
+    state: touch
+    mode: "0640"
+    owner: named
+    group: named
+  with_items:
+  - default
+  - auth_servers
+  - zone_transfers
+  - client_security
+  - queries
+  - query-errors
+
+- name: get cloud metadata
+  uri:
+    url: http://169.254.169.254/latest/meta-data/public-ipv4 
+    method: GET
+    return_content: yes
+    status_code: 200
+  register: cloud_metadata
+
+- name: Get reverse ip 
+  set_fact:
+    reverse_ip: "{{ cloud_metadata.content.split('.')[0:3] | reverse | join('.') }}"
+    last_octet: "{{ cloud_metadata.content.split('.')[-1] }}"
+
+- name: add zone file 
+  template:
+    src: zonefile.j2
+    dest: /etc/named/{{ hostname }}.{{ domain_name }}
+    owner: root
+    group: named
+    mode: '0644'
+  notify: restart named
+
+- name: copy named to /etc/named.conf
+  template:
+    src: named.j2
+    dest: /etc/named.conf
+    owner: root
+    group: named
+    mode: '0644'
+  notify: restart named
+  
+- name: copy resolv.conf
+  template:
+    src: resolv.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart named
+
+- name: copy reverse zone file
+  template:
+    src: reverse.j2
+    dest: /etc/named/reverse.{{ hostname }}.{{ domain_name }}
+    owner: root
+    group: named
+    mode: '0644'
+  notify: restart named
+
+# - name: restart named
+#   service:
+#     name: named
+#     state: restarted
+
+- name: flush handlers
+  meta: flush_handlers

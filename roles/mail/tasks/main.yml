@@ -1,0 +1,242 @@
+- name: Upgrade all packages
+  dnf:
+    name: '*'
+    state: latest
+
+- name: Clean trash
+  dnf:
+    autoremove: yes
+  
+- name: get cloud metadata
+  uri:
+    url: http://169.254.169.254/latest/meta-data/public-ipv4 
+    method: GET
+    return_content: yes
+    status_code: 200
+  register: cloud_metadata
+
+- name: Add MX and A records for mail
+  blockinfile:
+    path: /etc/named/{{ hostname }}.{{ domain_name }}
+    block: |
+      @       IN      MX  10  mail
+      mail IN A {{ cloud_metadata.content }}
+    marker: 
+      "; {mark} ANSIBLE MANAGED BLOCK for MX for mail"
+  notify: 
+  - increment serial
+  - restart named
+
+- name: flush handlers
+  meta: flush_handlers
+
+- name: install postfix
+  dnf:
+    name: postfix
+    state: installed
+
+- name: edit /etc/postfix/main.cf and set inet_protocols to ipv4
+  template:
+    src: main_cf.j2
+    dest: /etc/postfix/main.cf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart postfix 
+
+#flush handlers
+- name: flush handlers
+  meta: flush_handlers  
+
+- name: create user mailuser
+  user:
+    name: mailuser
+    state: present
+    password: "{{ 'mailuser' | password_hash('sha512') }}"
+
+- name: send email to nagios 
+  become: true
+  become_user: mailuser
+  shell: 'echo -e "mailuser@{{ hostname }}.{{ domain_name }}" | sendmail {{ mail_to }}'
+
+- name: install dovecot
+  dnf:
+    name: dovecot
+    state: installed
+
+- name: change dovecot configs
+  copy: 
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: '0644'
+  with_items:
+  - src: 10-logging.conf
+    dest: /etc/dovecot/conf.d/10-logging.conf
+  - src: dovecot.conf
+    dest: /etc/dovecot/dovecot.conf
+  - src: 10-auth.conf
+    dest: /etc/dovecot/conf.d/10-auth.conf
+  - src: 10-mail.conf
+    dest: /etc/dovecot/conf.d/10-mail.conf
+  - src: 15-mailboxes.conf
+    dest: /etc/dovecot/conf.d/15-mailboxes.conf
+  - src: 10-ssl.conf
+    dest: /etc/dovecot/conf.d/10-ssl.conf 
+  notify: restart dovecot
+
+- name: flush handlers
+  meta: flush_handlers
+
+- name: add dovecot user to mail group
+  user:
+    name: "dovecot"
+    group: "mail"
+    append: yes
+
+- name: install telnet
+  dnf:
+    name: telnet
+    state: installed
+
+- name: Open ports 25 and 143
+  firewalld:
+    permanent: yes
+    state: enabled
+    port: "{{ item }}/tcp"
+  with_items: 
+  - 25
+  - 143
+  notify: reload firewalld
+
+- name: flush_handlers
+  meta: flush_handlers
+
+- name: copy postfix master.cf 
+  copy:
+    src: master.cf
+    dest: /etc/postfix/master.cf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart postfix
+
+
+- name: install epel-release and dnf-plugins-core
+  dnf:
+    name: ['epel-release', 'dnf-plugins-core']
+    state: installed
+
+- name: run dnf config-manager --set-enabled powertools
+  dnf:
+    enable_plugin: powertools
+
+- name: install required packages
+  dnf:
+    name: ["make", "ImageMagick", "ImageMagick-devel", "ImageMagick-perl", "pcre-devel", "zlib", "zlib-devel", "libzip", "libzip-devel", "libmcrypt-devel", "php", "php-fpm", "php-devel", "php-pear", "php-cli", "php-gd"," php-curl", "php-xml", "php-mysqlnd", "php-mbstring", "php-intl", "php-ldap", "mariadb", "mariadb-server", "httpd"]
+    state: installed
+
+- name: Install multiple pear/pecl packages at once skipping the first prompt.
+    Prompts will be processed on the same order as the packages order.
+    If there is more prompts than packages, packages without prompts will be installed without any prompt expected.
+    If there is more packages than prompts, additionnal prompts will be ignored.
+  community.general.pear:
+    name: pecl/imagick, pecl/mcrypt, pecl/zip
+    state: installed
+    prompts: # added in 0.2.0 of community.general which require ansible > 2.9
+    - (.*)Please provide the prefix of ImageMagick installation \[autodetect\] : autodetect
+    - (.*)libmcrypt prefix? \[autodetect\] : autodetect
+    - null
+
+- name: Setup package extensions
+  lineinfile:
+    dest: "/etc/php.d/20-{{ item }}.ini"
+    line: "extension={{ item }}.so"
+    state: present
+    create: yes
+  with_items: 
+    - imagick
+    - mcrypt
+    - zip
+  notify: 
+    - restart mariadb
+    - restart httpd 
+    - restart php-fpm
+
+- name: create roundcubmail db
+  mysql_db:
+    name: roundcubemail
+    state: present
+    login_password: "{{ mysql_pwd }}"
+
+- name: create roundcube user 
+  mysql_user:
+    name: roundcube
+    password: mailuser
+    login_password: '{{ mysql_pwd }}'
+    priv: 'roundcubemail.*:ALL'
+    host: localhost
+  
+- name: download roundcube
+  get_url:
+    url: https://github.com/roundcube/roundcubemail/releases/download/1.4.11/roundcubemail-1.4.11-complete.tar.gz
+    dest: /tmp/roundcube.tar.gz
+    mode: '0440'
+  
+- name: unzip roundcube
+  unarchive:
+    src: /tmp/roundcube.tar.gz
+    remote_src: yes
+    dest: /tmp
+    owner: apache
+    group: apache
+
+- name: copy roundcube to /var/www/html/roundcube
+  copy:
+    src: /tmp/roundcubemail-1.4.11/
+    remote_src: yes
+    directory_mode: yes
+    dest: /var/www/html/roundcubemail
+    owner: apache
+    group: apache
+    mode: '0755'
+
+- name: Run chcon -t httpd_sys_rw_content_t /var/www/html/roundcubemail -R to get correct selinux permissions for the directory
+  sefcontext:
+    target: '/var/www/html/roundcubemail'
+    setype: httpd_sys_rw_content_t
+    state: present
+
+- name: add virtual host for roundcube
+  template:
+    src: vhost_mail.j2
+    dest: /etc/httpd/conf.d/mail.{{ hostname }}.conf
+    owner: apache
+    group: apache
+    mode: '0644'
+  notify: 
+  - restart httpd
+  - restart php-fpm
+
+- name: create folder /var/log/roundcube
+  file:
+    path: /var/log/roundcube
+    state: directory
+    owner: apache
+    group: apache
+    mode: '0755'
+
+#flush handlers
+- name: flush_handlers
+  meta: flush_handlers
+
+
+- name: Wait till I configure roundcube
+  pause:
+    prompt: "On ready..."
+
+# - name: Setup roundcube through installer
+#   pause:
+#     minutes: 5
+    

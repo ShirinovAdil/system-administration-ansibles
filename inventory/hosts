@@ -1,0 +1,5 @@
+
+
+[sysadmin]
+centos@yourip ansible_user=centos
+

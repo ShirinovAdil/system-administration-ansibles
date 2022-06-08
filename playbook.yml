@@ -1,0 +1,27 @@
+
+- hosts: sysadmin
+  become: yes
+  become_user: root
+
+
+
+  vars:
+    hostname: 
+    domain_name: 
+    mysql_pwd: 
+    ut_dns: 
+    mail_to: nagios@scoring.sa.cs.ut.ee
+  
+
+  roles:
+  - { role: etais, tags: etais }
+  - { role: dns, tags: dns }
+  - { role: apache, tags: apache }
+  - { role: mail, tags: mail }
+  - { role: tls, tags: tls }
+  - { role: filesystem, tags: filesystem }
+  - { role: containers, tags: containers }
+  - { role: devops, tags: devops }
+  - { role: kubernetes, tags: kubernetes }
+
+
