@@ -1,5 +1,5 @@
 
 
 [sysadmin]
-centos@yourip ansible_user=centos
+centos@YOURIPHERE ansible_user=centos
 

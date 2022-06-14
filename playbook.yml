@@ -10,7 +10,7 @@
     domain_name: 
     mysql_pwd: 
     ut_dns: 
-    mail_to: nagios@scoring.sa.cs.ut.ee
+    mail_to: 
   
 
   roles:
